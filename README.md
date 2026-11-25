@@ -53,3 +53,15 @@ the provider's price list.
 pip install -r requirements-dev.txt
 pytest
 ```
+
+## Deploying
+
+Push to `main`: GitHub Actions tests, builds `linux/arm64`, pushes `deploykar/ai-gateway:git-<sha>` and sets that
+tag in deploykar-infra `eks/services/ai-gateway`; Argo CD rolls it out within a minute (2 pods on platform nodes).
+
+- AWS: IRSA role `deploykar-prod-ai-gateway` (deploykar-infra `terraform/modules/07-iam/ai_gateway.tf`) may invoke
+  only the catalog's Bedrock models. Adding a Bedrock model = add it to that file and to `app/catalog.py`.
+- Cloudflare: Secret `deploykar-system/ai-gateway` (`CF_AI_ACCOUNT_ID`, `CF_AI_TOKEN`), made by hand.
+- Public address: `ai.deploykar.tech` (DNS only, CNAME to the Kong load balancer; certificate from
+  ClusterIssuer `letsencrypt-ai`).
+- Who sees AI cards: deploy-api `AI_CARDS` ("" nobody, "*" everyone, or user ids).
