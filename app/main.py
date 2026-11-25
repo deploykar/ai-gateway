@@ -32,6 +32,7 @@ from app.errors import (
     unexpected_error_handler,
     validation_error_handler,
 )
+from app.bedrock import Bedrock
 from app.providers import Cloudflare
 from app.quota import Quota
 from app.store import AIRecord, Store
@@ -148,6 +149,14 @@ def create_app(settings: Settings | None = None, *, store=None, redis=None, prov
                 cf = Cloudflare(settings.CF_AI_ACCOUNT_ID, settings.CF_AI_TOKEN, settings.UPSTREAM_TIMEOUT_SECONDS)
                 stack.push_async_callback(cf.aclose)
                 state.providers = {"cloudflare": cf}
+                if settings.BEDROCK_ENABLED:
+                    from aiobotocore.config import AioConfig
+                    from aiobotocore.session import get_session
+                    config = AioConfig(retries={"mode": "standard", "max_attempts": 2}, connect_timeout=5,
+                                       read_timeout=settings.UPSTREAM_TIMEOUT_SECONDS, max_pool_connections=100)
+                    client = await stack.enter_async_context(
+                        get_session().create_client("bedrock-runtime", region_name=settings.AWS_REGION, config=config))
+                    state.providers["bedrock"] = Bedrock(client)
             else:
                 state.providers = providers
             state.quota = Quota(state.redis, state.store, settings.TOKEN_CACHE_SECONDS,
@@ -314,7 +323,12 @@ def create_app(settings: Settings | None = None, *, store=None, redis=None, prov
         await request.app.state.quota.check_budget(record)
         provider = provider_for(request, model)
 
-        reply = await provider.embeddings({"model": model.upstream, "input": items})
+        request_body = {"model": model.upstream, "input": items}
+        if model.dims:
+            request_body["dimensions"] = model.dims
+        if body.get("input_type") in ("search_document", "search_query"):  # Cohere: documents vs questions
+            request_body["input_type"] = body["input_type"]
+        reply = await provider.embeddings(request_body)
         rows = sorted(reply.get("data") or [], key=lambda d: d.get("index", 0))
         if len(rows) != len(items):
             raise GatewayError(502, "UPSTREAM_ERROR", "The model didn't answer. Retry in a few seconds.")

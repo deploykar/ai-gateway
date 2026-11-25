@@ -148,7 +148,8 @@ def test_embeddings_in_order_and_charged(world):
     body = r.json()
     assert body["model"] == "bge-base-en-v1.5" and [d["index"] for d in body["data"]] == [0, 1]
     assert len(body["data"][0]["embedding"]) == 768
-    assert world.provider.sent[-1][1] == {"model": "@cf/baai/bge-base-en-v1.5", "input": ["refunds", "shipping"]}
+    assert world.provider.sent[-1][1] == {"model": "@cf/baai/bge-base-en-v1.5", "input": ["refunds", "shipping"],
+                                          "dimensions": 768}
     assert usage(world)["tokens_in"] == "20"
 
 

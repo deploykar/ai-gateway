@@ -1,0 +1,108 @@
+# ai-gateway: test, build, push to ECR, deploy through Argo CD.
+#
+#   pull request          test + build (nothing is pushed)
+#   push to any branch    test, build, push deploykar/ai-gateway:git-<sha>
+#   push to main          the same, then set that tag in deploykar-infra (eks/services/ai-gateway);
+#                         Argo CD rolls it out within a minute
+#
+# Needs: repo variable AWS_CI_ROLE_ARN and repo secret GITOPS_DEPLOY_KEY (see deploykar-infra/eks/README.md),
+# and the ECR repository deploykar/ai-gateway.
+name: Build and deploy
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  IMAGE: 309311582281.dkr.ecr.ap-south-1.amazonaws.com/deploykar/ai-gateway
+  PLATFORMS: linux/arm64
+  SERVICE: ai-gateway
+  GITOPS_PATHS: eks/services/ai-gateway
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=git-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - if: github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - if: github.event_name != 'pull_request'
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: deploykar/deploykar-infra
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+          path: infra
+      - name: Set the new image tag for Argo CD
+        working-directory: infra
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          git config user.name "deploykar-ci"
+          git config user.email "ci@deploykar.tech"
+          subject=$(printf '%s\n' "$COMMIT_MESSAGE" | head -n 1 | cut -c1-72)
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            for path in $GITOPS_PATHS; do
+              file="$path/kustomization.yaml"
+              [ "$(grep -c '^  newTag: ' "$file")" = 1 ] || { echo "$file: expected exactly one newTag"; exit 1; }
+              sed -i "s|^  newTag: .*|  newTag: $TAG|" "$file"
+            done
+            if git diff --quiet; then echo "$SERVICE is already at $TAG"; exit 0; fi
+            git commit -qam "deploy $SERVICE $TAG: $subject"
+            if git push -q origin HEAD:main; then
+              echo "Deployed \`$SERVICE\` \`$TAG\` (Argo CD syncs within a minute)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "could not push to deploykar-infra"; exit 1

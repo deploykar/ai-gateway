@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     AI_DOMAIN: str = "ai.deploykar.tech"
+    AWS_REGION: str = "ap-south-1"  # Bedrock (credentials from the pod's IAM role)
+    BEDROCK_ENABLED: bool = True
 
     # Cloudflare Workers AI (open models). Never shown to customers.
     CF_AI_ACCOUNT_ID: str = ""
