@@ -26,7 +26,7 @@ permissions:
 env:
   AWS_REGION: ap-south-1
   IMAGE: 309311582281.dkr.ecr.ap-south-1.amazonaws.com/deploykar/ai-gateway
-  PLATFORMS: linux/arm64
+  PLATFORMS: linux/amd64,linux/arm64  # amd64 for the dev cluster on the VPS (x86), arm64 for prod (Graviton)
   SERVICE: ai-gateway
   GITOPS_PATHS: eks/services/ai-gateway
 
